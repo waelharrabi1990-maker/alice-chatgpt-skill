@@ -4,19 +4,18 @@ import os
 
 app = Flask(__name__)
 
-# Настройка ключа OpenAI
+# Подключаем OpenAI API ключ
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 @app.route('/', methods=['POST'])
 def dialog():
     try:
         req = request.get_json()
-
-        # Извлекаем текст запроса от Алисы
         user_input = req['request']['original_utterance']
 
-        # Запрос к OpenAI
-        response = openai.ChatCompletion.create(
+        # Новый синтаксис OpenAI >= 1.0.0
+        client = openai.OpenAI()
+        chat_response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Ты — дерзкий, умный ассистент. Отвечай коротко и резко."},
@@ -26,9 +25,8 @@ def dialog():
             temperature=0.8
         )
 
-        reply = response.choices[0].message['content'].strip()
+        reply = chat_response.choices[0].message.content.strip()
 
-        # Ответ Алисе
         return jsonify({
             "response": {
                 "text": reply,
