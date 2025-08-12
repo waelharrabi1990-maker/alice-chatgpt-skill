@@ -1,11 +1,13 @@
 from flask import Flask, request, jsonify
 import os, datetime, requests, json
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
 # ---------- Region (Doha, Qatar) ----------
 LAT, LON = 25.2854, 51.5310
-TIMEZONE = "auto"   # set TZ=Asia/Qatar on Render for correct local date
+TIMEZONE = "auto"                # used for Open-Meteo
+QATAR_TZ = ZoneInfo("Asia/Qatar")  # used for local clock
 
 # ---------- Small utils ----------
 def round_s(x, n=1):
@@ -31,8 +33,8 @@ def ttl_cache(seconds=600):
         return wrapper
     return decorator
 
-def now_local():
-    return datetime.datetime.now()  # respect TZ env on Render
+def now_qatar():
+    return datetime.datetime.now(QATAR_TZ)  # correct local time in Qatar
 
 # ---------- Data fetchers (no API keys) ----------
 @ttl_cache(600)
@@ -81,17 +83,30 @@ def fetch_crypto():
 
 @ttl_cache(600)
 def fetch_gold():
-    """XAU→USD with solid fallback."""
-    # Primary: XAU -> USD
+    """USD per 1 XAU (troy ounce) with multiple fallbacks."""
+    # 1) Metals.live spot (list of dicts: [{"gold": 2394.12}, ...])
+    try:
+        r = requests.get("https://api.metals.live/v1/spot", timeout=8)
+        r.raise_for_status()
+        arr = r.json()
+        if isinstance(arr, list):
+            for item in arr:
+                if isinstance(item, dict) and "gold" in item:
+                    val = float(item["gold"])
+                    if val > 0:
+                        return val
+    except Exception:
+        pass
+    # 2) exchangerate.host XAU->USD
     try:
         r = requests.get("https://api.exchangerate.host/convert?from=XAU&to=USD", timeout=8)
         r.raise_for_status()
         res = r.json().get("result")
         if res:
-            return float(res)  # USD per 1 XAU
+            return float(res)
     except Exception:
         pass
-    # Fallback: USD -> XAU (invert)
+    # 3) exchangerate.host USD->XAU invert
     try:
         r = requests.get("https://api.exchangerate.host/convert?from=USD&to=XAU", timeout=8)
         r.raise_for_status()
@@ -120,9 +135,9 @@ def quote_of_the_day(dt: datetime.datetime):
 
 # ---------- Brief builder ----------
 def build_morning_brief():
-    dt = now_local()
+    dt = now_qatar()
     weekday = ["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"][dt.weekday()]
-    dstr = dt.strftime("%d.%m.%Y")
+    dstr = dt.strftime("%d.%m.%Y %H:%M")  # date + local time
 
     # Weather
     try:
@@ -165,7 +180,6 @@ def build_morning_brief():
         f"Цитата дня: {quote}\n"
         f"Сказать ещё раз или завершить?"
     )
-    # Optional: shorter TTS line
     tts = (
         f"{weekday}, {dstr}. "
         f"Катар: воздух {t_air}, вода {t_water}, ветер {wind}. "
@@ -174,7 +188,7 @@ def build_morning_brief():
     )
     return text, tts
 
-# ---------- Alice-safe responses ----------
+# ---------- Alice-safe response ----------
 def alice_ok(version, session, text, tts=None, buttons=None, end=False):
     return jsonify({
         "version": version or "1.0",
@@ -190,26 +204,15 @@ def alice_ok(version, session, text, tts=None, buttons=None, end=False):
 # ---------- Routes ----------
 @app.route("/", methods=["POST"])
 def dialog():
-    # Never crash/400 on Alice
     req = request.get_json(silent=True) or {}
     version = req.get("version", "1.0")
     session = req.get("session") or {"message_id": 0, "session_id": "", "user_id": ""}
     utter = (req.get("request", {}).get("original_utterance") or "").lower().strip()
 
-    # (Optional) compact log for debugging in Render
-    try:
-        app.logger.info("Alice req: %s", json.dumps({
-            "ver": version, "new": req.get("session", {}).get("new", False), "utt": utter
-        }, ensure_ascii=False))
-    except Exception:
-        pass
-
     try:
         # First launch
         if req.get("session", {}).get("new"):
-            text = "Добро пожаловать в Утреннее Шоу. Скажи: «Запусти выпуск»."
-            return alice_ok(version, session, text)
-
+            return alice_ok(version, session, "Добро пожаловать в Утреннее Шоу. Скажи: «Запусти выпуск».")
         # Triggers
         if any(k in utter for k in ["запусти выпуск", "утренний выпуск", "дай сводку", "start", "выпуск"]):
             text, tts = build_morning_brief()
@@ -217,23 +220,18 @@ def dialog():
                 {"title": "Ещё раз", "hide": True},
                 {"title": "Стоп", "hide": True},
             ])
-
         if "ещё" in utter:
             text, tts = build_morning_brief()
             return alice_ok(version, session, text, tts, buttons=[
                 {"title": "Ещё раз", "hide": True},
                 {"title": "Стоп", "hide": True},
             ])
-
         if any(k in utter for k in ["стоп", "хватит", "выход", "заверши"]):
             return alice_ok(version, session, "Окей, мощного дня!", end=True)
-
-        # Fallback prompt
+        # Fallback
         return alice_ok(version, session, "Скажи: «Запусти выпуск» или «Ещё раз».",
                         buttons=[{"title": "Запусти выпуск", "hide": True}])
-
     except Exception as e:
-        # Safety net: always answer 200 OK
         app.logger.exception("handler_error: %s", e)
         return alice_ok(version, session, "Короткая пауза на линии. Скажи: «Запусти выпуск» ещё раз.")
 
