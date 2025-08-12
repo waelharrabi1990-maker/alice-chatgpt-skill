@@ -129,46 +129,34 @@ def fetch_crypto():
 
     return {"btc_usd": btc, "xrp_usd": xrp}
 
-@ttl_cache(300)
+@ttl_cache(120)
 def fetch_gold():
-    """USD per 1 XAU (troy ounce) with multiple fallbacks + headers."""
-    # 1) Metals.live spot feed
+    """Return USD per 1 XAU (troy ounce). Multiple resilient sources."""
+    # 1) Yahoo Finance – COMEX front-month futures (GC=F)
     try:
-        r = requests.get("https://api.metals.live/v1/spot", timeout=6, headers=HEADERS)
+        r = requests.get(
+            "https://query1.finance.yahoo.com/v7/finance/quote?symbols=GC=F",
+            timeout=6, headers=HEADERS
+        )
         r.raise_for_status()
-        arr = r.json()
-        if isinstance(arr, list):
-            for item in arr:
-                if isinstance(item, dict) and "gold" in item:
-                    val = float(item["gold"])
-                    if val > 0:
-                        return val
+        q = r.json().get("quoteResponse", {}).get("result", [])
+        if q and q[0].get("regularMarketPrice"):
+            val = float(q[0]["regularMarketPrice"])
+            if val > 0:
+                return val
     except Exception:
         pass
 
-    # 2) exchangerate.host XAU->USD
+    # 1b) Yahoo Finance – spot proxy (XAUUSD=X)
     try:
-        r = requests.get("https://api.exchangerate.host/convert?from=XAU&to=USD",
-                         timeout=6, headers=HEADERS)
+        r = requests.get(
+            "https://query1.finance.yahoo.com/v7/finance/quote?symbols=XAUUSD=X",
+            timeout=6, headers=HEADERS
+        )
         r.raise_for_status()
-        res = r.json().get("result")
-        if res:
-            return float(res)
-    except Exception:
-        pass
-
-    # 3) exchangerate.host USD->XAU invert
-    try:
-        r = requests.get("https://api.exchangerate.host/convert?from=USD&to=XAU",
-                         timeout=6, headers=HEADERS)
-        r.raise_for_status()
-        rate = r.json().get("result")
-        if rate and float(rate) != 0.0:
-            return 1.0 / float(rate)
-    except Exception:
-        pass
-
-    return None
+        q = r.json().get("quoteResponse", {}).get("result", [])
+        if q and q[0].get("regularMarketPrice"):
+            val = float(q[0]["reg]()
 
 # ---------- Quotes ----------
 QUOTES = [
