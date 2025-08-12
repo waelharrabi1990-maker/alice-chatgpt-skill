@@ -156,7 +156,49 @@ def fetch_gold():
         r.raise_for_status()
         q = r.json().get("quoteResponse", {}).get("result", [])
         if q and q[0].get("regularMarketPrice"):
-            val = float(q[0]["reg]()
+            val = float(q[0]["regularMarketPrice"])
+            if val > 0:
+                return val
+    except Exception:
+        pass
+
+    # 2) Metals.live (list of dicts)
+    try:
+        r = requests.get("https://api.metals.live/v1/spot", timeout=6, headers=HEADERS)
+        r.raise_for_status()
+        arr = r.json()
+        if isinstance(arr, list):
+            for item in arr:
+                if isinstance(item, dict) and "gold" in item:
+                    val = float(item["gold"])
+                    if val > 0:
+                        return val
+    except Exception:
+        pass
+
+    # 3) exchangerate.host XAU->USD
+    try:
+        r = requests.get("https://api.exchangerate.host/convert?from=XAU&to=USD",
+                         timeout=6, headers=HEADERS)
+        r.raise_for_status()
+        res = r.json().get("result")
+        if res:
+            return float(res)
+    except Exception:
+        pass
+
+    # 4) exchangerate.host USD->XAU invert
+    try:
+        r = requests.get("https://api.exchangerate.host/convert?from=USD&to=XAU",
+                         timeout=6, headers=HEADERS)
+        r.raise_for_status()
+        rate = r.json().get("result")
+        if rate and float(rate) != 0.0:
+            return 1.0 / float(rate)
+    except Exception:
+        pass
+
+    return None
 
 # ---------- Quotes ----------
 QUOTES = [
