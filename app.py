@@ -1,25 +1,22 @@
 from flask import Flask, request, jsonify
-import os, datetime, requests, json
+import os, datetime, requests
 
-# --- timezone: prefer zoneinfo, fallback to pytz so startup never fails
 try:
     from zoneinfo import ZoneInfo
     QATAR_TZ = ZoneInfo("Asia/Qatar")
 except Exception:
     try:
-        import pytz  # type: ignore
-        QATAR_TZ = pytz.timezone("Asia/Qatar")  # type: ignore
+        import pytz
+        QATAR_TZ = pytz.timezone("Asia/Qatar")
     except Exception:
-        QATAR_TZ = None  # last resort: use server time
+        QATAR_TZ = None
 
 app = Flask(__name__)
 
-# ---------- Region (Doha, Qatar) ----------
 LAT, LON = 25.2854, 51.5310
-TIMEZONE = "auto"                # for Open-Meteo
+TIMEZONE = "auto"
 HEADERS = {"User-Agent": "morning-show-skill/1.0 (+render)"}
 
-# ---------- Small utils ----------
 def round_s(x, n=1):
     try:
         return str(round(float(x), n))
@@ -27,7 +24,6 @@ def round_s(x, n=1):
         return "—"
 
 def ttl_cache(seconds=600):
-    """Tiny in-process TTL cache."""
     def decorator(fn):
         cache = {}
         def wrapper(*args, **kwargs):
@@ -49,13 +45,10 @@ def now_qatar():
             return datetime.datetime.now(QATAR_TZ)
     except Exception:
         pass
-    # fallback: server local time
     return datetime.datetime.now()
 
-# ---------- Data fetchers (no API keys) ----------
 @ttl_cache(600)
 def fetch_weather():
-    """Air temp (°C), humidity (%), precip (mm/h), wind (m/s)."""
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={LAT}&longitude={LON}"
@@ -86,10 +79,7 @@ def fetch_sea_temp():
 
 @ttl_cache(60)
 def fetch_crypto():
-    """Return {'btc_usd': float|None, 'xrp_usd': float|None} with robust fallbacks."""
     btc = xrp = None
-
-    # 1) Binance spot (reliable, no key)
     try:
         r = requests.get(
             "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
@@ -109,7 +99,6 @@ def fetch_crypto():
     except Exception:
         pass
 
-    # 2) Fallback: CoinGecko simple/price
     if btc is None or xrp is None:
         try:
             r = requests.get(
@@ -120,87 +109,15 @@ def fetch_crypto():
             j = r.json()
             if btc is None:
                 v = j.get("bitcoin", {}).get("usd")
-                btc = float(v) if v not in (None, 0, "0") else None
+                btc = float(v) if v else None
             if xrp is None:
                 v = j.get("ripple", {}).get("usd")
-                xrp = float(v) if v not in (None, 0, "0") else None
+                xrp = float(v) if v else None
         except Exception:
             pass
 
     return {"btc_usd": btc, "xrp_usd": xrp}
 
-@ttl_cache(120)
-def fetch_gold():
-    """Return USD per 1 XAU (troy ounce). Multiple resilient sources."""
-    # 1) Yahoo Finance – COMEX front-month futures (GC=F)
-    try:
-        r = requests.get(
-            "https://query1.finance.yahoo.com/v7/finance/quote?symbols=GC=F",
-            timeout=6, headers=HEADERS
-        )
-        r.raise_for_status()
-        q = r.json().get("quoteResponse", {}).get("result", [])
-        if q and q[0].get("regularMarketPrice"):
-            val = float(q[0]["regularMarketPrice"])
-            if val > 0:
-                return val
-    except Exception:
-        pass
-
-    # 1b) Yahoo Finance – spot proxy (XAUUSD=X)
-    try:
-        r = requests.get(
-            "https://query1.finance.yahoo.com/v7/finance/quote?symbols=XAUUSD=X",
-            timeout=6, headers=HEADERS
-        )
-        r.raise_for_status()
-        q = r.json().get("quoteResponse", {}).get("result", [])
-        if q and q[0].get("regularMarketPrice"):
-            val = float(q[0]["regularMarketPrice"])
-            if val > 0:
-                return val
-    except Exception:
-        pass
-
-    # 2) Metals.live (list of dicts)
-    try:
-        r = requests.get("https://api.metals.live/v1/spot", timeout=6, headers=HEADERS)
-        r.raise_for_status()
-        arr = r.json()
-        if isinstance(arr, list):
-            for item in arr:
-                if isinstance(item, dict) and "gold" in item:
-                    val = float(item["gold"])
-                    if val > 0:
-                        return val
-    except Exception:
-        pass
-
-    # 3) exchangerate.host XAU->USD
-    try:
-        r = requests.get("https://api.exchangerate.host/convert?from=XAU&to=USD",
-                         timeout=6, headers=HEADERS)
-        r.raise_for_status()
-        res = r.json().get("result")
-        if res:
-            return float(res)
-    except Exception:
-        pass
-
-    # 4) exchangerate.host USD->XAU invert
-    try:
-        r = requests.get("https://api.exchangerate.host/convert?from=USD&to=XAU",
-                         timeout=6, headers=HEADERS)
-        r.raise_for_status()
-        rate = r.json().get("result")
-        if rate and float(rate) != 0.0:
-            return 1.0 / float(rate)
-    except Exception:
-        pass
-
-    return None
-
-# ---------- Quotes ----------
 QUOTES = [
     "Дисциплина бьёт мотивацию в любой день недели.",
     "Маленькие шаги ежедневно дают большие рывки раз в квартал.",
@@ -216,13 +133,11 @@ QUOTES = [
 def quote_of_the_day(dt: datetime.datetime):
     return QUOTES[dt.toordinal() % len(QUOTES)]
 
-# ---------- Brief builder ----------
 def build_morning_brief():
     dt = now_qatar()
     weekday = ["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"][dt.weekday()]
     dstr = dt.strftime("%d.%m.%Y %H:%M")
 
-    # Weather
     try:
         w = fetch_weather()
         t_air = f"{round_s(w['t_air'],1)}°C" if w.get("t_air") is not None else "—"
@@ -233,14 +148,12 @@ def build_morning_brief():
     except Exception:
         t_air, hum, wind, rain = "—", "—", "—", "—"
 
-    # Sea temp
     try:
         sea = fetch_sea_temp()
         t_water = f"{round_s(sea,1)}°C" if sea is not None else "—"
     except Exception:
         t_water = "—"
 
-    # Prices
     try:
         c = fetch_crypto()
         btc = f"${round_s(c.get('btc_usd'),0)}" if c.get('btc_usd') is not None else "—"
@@ -248,30 +161,23 @@ def build_morning_brief():
     except Exception:
         btc, xrp = "—", "—"
 
-    try:
-        xau = fetch_gold()
-        gold = f"${round_s(xau,2)}" if xau is not None else "—"
-    except Exception:
-        gold = "—"
-
     quote = quote_of_the_day(dt)
 
     text = (
         f"{weekday}, {dstr}\n"
         f"Катар — Погода: воздух {t_air}, вода {t_water}, ветер {wind}, дождь: {rain}, влажность {hum}.\n"
-        f"Цены: BTC {btc}, Золото {gold} за унцию, XRP {xrp}.\n"
+        f"Цены: BTC {btc}, XRP {xrp}.\n"
         f"Цитата дня: {quote}\n"
         f"Сказать ещё раз или завершить?"
     )
     tts = (
         f"{weekday}, {dstr}. "
         f"Катар: воздух {t_air}, вода {t_water}, ветер {wind}. "
-        f"BTC {btc}, золото {gold}, XRP {xrp}. "
+        f"BTC {btc}, XRP {xrp}. "
         f"{quote}"
     )
     return text, tts
 
-# ---------- Alice-safe response ----------
 def alice_ok(version, session, text, tts=None, buttons=None, end=False):
     return jsonify({
         "version": version or "1.0",
@@ -284,7 +190,6 @@ def alice_ok(version, session, text, tts=None, buttons=None, end=False):
         }
     })
 
-# ---------- Routes ----------
 @app.route("/", methods=["POST"])
 def dialog():
     req = request.get_json(silent=True) or {}
